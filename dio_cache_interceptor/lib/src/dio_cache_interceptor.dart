@@ -6,6 +6,8 @@ import './store/cache_store.dart';
 import 'model/cache_options.dart';
 import 'util/response_extension.dart';
 
+typedef CacheChanged<T> = void Function(T value);
+
 /// Cache interceptor
 class DioCacheInterceptor extends Interceptor {
   static const String _getMethodName = 'GET';
@@ -13,8 +15,9 @@ class DioCacheInterceptor extends Interceptor {
 
   final CacheOptions _options;
   final CacheStore _store;
+  final CacheChanged<Response>? onCacheHit;
 
-  DioCacheInterceptor({required CacheOptions options})
+  DioCacheInterceptor({required CacheOptions options,this.onCacheHit})
       : assert(options.store != null),
         _options = options,
         _store = options.store!;
@@ -27,44 +30,44 @@ class DioCacheInterceptor extends Interceptor {
     // Add time when the request has been sent
     // for further expiry calculation.
     options.extra[CacheResponse.requestSentDate] = DateTime.now();
-
-    final cacheOptions = _getCacheOptions(options);
-
-    if (_shouldSkip(options, options: cacheOptions)) {
-      handler.next(options);
-      return;
-    }
-
-    // Early ends if policy does not require cache lookup.
-    final policy = cacheOptions.policy;
-    if (policy != CachePolicy.request && policy != CachePolicy.forceCache) {
-      handler.next(options);
-      return;
-    }
-
-    final strategy = await CacheStrategyFactory(
-      request: options,
-      cacheResponse: await _loadCacheResponse(options),
-      cacheOptions: cacheOptions,
-    ).compute();
-
-    var cacheResponse = strategy.cacheResponse;
-    if (cacheResponse != null) {
-      // Cache hit
-
-      // Update cached response if needed
-      cacheResponse = await _updateCacheResponse(cacheResponse, cacheOptions);
-
-      handler.resolve(
-        cacheResponse.toResponse(options, fromNetwork: false),
-        true,
-      );
-      return;
-    }
-
-    // Requests with conditional request if available
-    // or requests with given options
-    handler.next(strategy.request ?? options);
+    handler.next(options);
+    // final cacheOptions = _getCacheOptions(options);
+    //
+    // if (_shouldSkip(options, options: cacheOptions)) {
+    //   handler.next(options);
+    //   return;
+    // }
+    //
+    // // Early ends if policy does not require cache lookup.
+    // final policy = cacheOptions.policy;
+    // if (policy != CachePolicy.request && policy != CachePolicy.forceCache) {
+    //   handler.next(options);
+    //   return;
+    // }
+    //
+    // final strategy = await CacheStrategyFactory(
+    //   request: options,
+    //   cacheResponse: await _loadCacheResponse(options),
+    //   cacheOptions: cacheOptions,
+    // ).compute();
+    //
+    // var cacheResponse = strategy.cacheResponse;
+    // if (cacheResponse != null) {
+    //   // Cache hit
+    //
+    //   // Update cached response if needed
+    //   cacheResponse = await _updateCacheResponse(cacheResponse, cacheOptions);
+    //
+    //   handler.resolve(
+    //     cacheResponse.toResponse(options, fromNetwork: false),
+    //     true,
+    //   );
+    //   return;
+    // }
+    //
+    // // Requests with conditional request if available
+    // // or requests with given options
+    // handler.next(strategy.request ?? options);
   }
 
   @override
@@ -93,7 +96,7 @@ class DioCacheInterceptor extends Interceptor {
     // Is status 304 being set as valid status?
     if (response.statusCode == 304) {
       // Update cache response with response header values
-      final cacheResponse = await _loadResponse(response.requestOptions);
+      final cacheResponse = await loadResponse(response.requestOptions);
       if (cacheResponse != null) {
         response = cacheResponse..updateCacheHeaders(response);
       }
@@ -122,7 +125,7 @@ class DioCacheInterceptor extends Interceptor {
 
     if (_isCacheCheckAllowed(err.response, cacheOptions)) {
       // Retrieve response from cache
-      final cacheResponse = await _loadResponse(err.requestOptions);
+      final cacheResponse = await loadResponse(err.requestOptions);
 
       if (err.response != null && cacheResponse != null) {
         // Update cache response with response header values
@@ -135,6 +138,9 @@ class DioCacheInterceptor extends Interceptor {
 
       // Resolve with found cached response
       if (cacheResponse != null) {
+        if(onCacheHit != null){
+          onCacheHit?.call(cacheResponse);
+        }
         handler.resolve(cacheResponse);
         return;
       }
@@ -182,6 +188,10 @@ class DioCacheInterceptor extends Interceptor {
   Future<CacheResponse?> _loadCacheResponse(RequestOptions request) async {
     final options = _getCacheOptions(request);
     final cacheKey = options.keyBuilder(request);
+    if(cacheKey.isEmpty){
+      return null;
+    }
+
     final cacheStore = _getCacheStore(options);
     final response = await cacheStore.get(cacheKey);
 
@@ -201,7 +211,7 @@ class DioCacheInterceptor extends Interceptor {
   }
 
   /// Reads cached response from cache store and transforms it to Response object.
-  Future<Response?> _loadResponse(RequestOptions request) async {
+  Future<Response?> loadResponse(RequestOptions request) async {
     final existing = await _loadCacheResponse(request);
     // Transform CacheResponse to Response object
     return existing?.toResponse(request);
